@@ -16,7 +16,10 @@ export default function Home() {
   const [tableNumber, setTableNumber] = useState("");
 
   const totalPrice = cartItems.reduce(
-    (sum, item) => sum + Number(item.price || 0),
+    (sum, item) =>
+      sum +
+      Number(item.price || 0) *
+        Number(item.quantity || 1),
     0
   );
 
@@ -75,54 +78,108 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen bg-gray-100 p-6">
-      <div className="max-w-6xl mx-auto">
-        <div className="flex justify-between items-center mb-8">
-          <h1 className="text-4xl font-bold text-black">
-            🍽 Restaurant Management System
-          </h1>
+    <main className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-orange-950 p-6">
+      <div className="max-w-7xl mx-auto">
 
-          <div className="bg-blue-500 text-white px-4 py-2 rounded">
+        <div className="flex justify-between items-center mb-10">
+          <div>
+            <h1 className="text-5xl font-extrabold text-white">
+              🍽 DEMO
+            </h1>
+
+            <p className="text-orange-300 mt-2">
+              Premium Dining Experience
+            </p>
+          </div>
+
+          <div className="bg-orange-500 text-white px-6 py-3 rounded-2xl shadow-xl">
             🛒 Cart ({cartItems.length})
           </div>
         </div>
 
-        <div className="mb-8 bg-white p-4 rounded shadow">
-          <h2 className="text-xl font-bold text-black">
+        <div className="mb-8 bg-white/10 backdrop-blur-lg border border-white/20 p-6 rounded-3xl shadow-2xl">
+
+          <h2 className="text-xl font-bold text-white">
             Cart Items
           </h2>
 
           {cartItems.length === 0 ? (
-            <p className="text-gray-500">
-              Cart is empty
+            <p className="text-gray-300">
+              🛒 Your cart is waiting for something delicious
             </p>
           ) : (
             <ul>
-              {cartItems.map((item, index) => (
+		              {cartItems.map((item, index) => (
                 <li
                   key={index}
-                  className="flex justify-between items-center py-1"
+                  className="flex justify-between items-center py-2"
                 >
-                  <span className="text-black">
-                    {item.name} - ₹{item.price}
-                  </span>
+                  <div className="flex items-center justify-between w-full">
+                    <span className="text-white">
+                      {item.name} - ₹
+                      {Number(item.price) *
+                        Number(item.quantity)}
+                    </span>
 
-                  <button
-                    onClick={() =>
-                      setCartItems(
-                        cartItems.filter((_, i) => i !== index)
-                      )
-                    }
-                    className="bg-red-500 text-white px-2 py-1 rounded"
-                  >
-                    Remove
-                  </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => {
+                          if (item.quantity === 1) {
+                            setCartItems(
+                              cartItems.filter(
+                                (cartItem) =>
+                                  cartItem.id !== item.id
+                              )
+                            );
+                          } else {
+                            setCartItems(
+                              cartItems.map((cartItem) =>
+                                cartItem.id === item.id
+                                  ? {
+                                      ...cartItem,
+                                      quantity:
+                                        cartItem.quantity - 1,
+                                    }
+                                  : cartItem
+                              )
+                            );
+                          }
+                        }}
+                        className="bg-red-500 text-white px-2 rounded"
+                      >
+                        -
+                      </button>
+
+                      <span className="text-white font-semibold">
+                        {item.quantity}
+                      </span>
+
+                      <button
+                        onClick={() => {
+                          setCartItems(
+                            cartItems.map((cartItem) =>
+                              cartItem.id === item.id
+                                ? {
+                                    ...cartItem,
+                                    quantity:
+                                      cartItem.quantity + 1,
+                                  }
+                                : cartItem
+                            )
+                          );
+                        }}
+                        className="bg-green-500 text-white px-2 rounded"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
                 </li>
               ))}
             </ul>
           )}
 
-          <div className="mt-4 font-bold text-black">
+          <div className="mt-4 font-bold text-white text-xl">
             Total: ₹{totalPrice}
           </div>
 
@@ -131,30 +188,36 @@ export default function Home() {
               type="text"
               placeholder="Your Name (Optional)"
               value={customerName}
-              onChange={(e) => setCustomerName(e.target.value)}
-              className="border p-2 rounded w-full mb-2 text-black"
+              onChange={(e) =>
+                setCustomerName(e.target.value)
+              }
+              className="border border-white/20 bg-white/10 text-white p-3 rounded-xl w-full mb-3"
             />
 
             <input
               type="text"
               placeholder="Table Number"
               value={tableNumber}
-              onChange={(e) => setTableNumber(e.target.value)}
-              className="border p-2 rounded w-full mb-2 text-black"
+              onChange={(e) =>
+                setTableNumber(e.target.value)
+              }
+              className="border border-white/20 bg-white/10 text-white p-3 rounded-xl w-full mb-3"
             />
 
             <button
               onClick={placeOrder}
-              className="bg-blue-500 text-white px-4 py-2 rounded"
+              className="bg-orange-500 hover:bg-orange-600 text-white px-6 py-3 rounded-xl"
             >
               Place Order
             </button>
           </div>
         </div>
-                {loading ? (
-          <p className="text-black">Loading menu...</p>
+	        {loading ? (
+          <p className="text-white">
+            Loading menu...
+          </p>
         ) : (
-          <div className="grid md:grid-cols-3 gap-4">
+          <div className="grid md:grid-cols-3 gap-6">
             {menuItems
               .filter(
                 (item) =>
@@ -163,25 +226,52 @@ export default function Home() {
               .map((item) => (
                 <div
                   key={item.id}
-                  className="bg-white p-4 rounded shadow"
+                  className="bg-white/10 backdrop-blur-lg border border-white/20 p-6 rounded-3xl shadow-xl hover:scale-105 transition-all duration-300"
                 >
-                  <h3 className="text-xl font-bold text-black">
+                  <h3 className="text-xl font-bold text-white">
                     {item.name}
                   </h3>
 
-                  <p className="text-gray-700">
+                  <p className="text-orange-300 mt-2">
                     ₹{item.price}
                   </p>
 
-                  <p className="text-sm text-gray-500">
+                  <p className="text-gray-300">
                     {item.category}
                   </p>
 
                   <button
-                    onClick={() =>
-                      setCartItems([...cartItems, item])
-                    }
-                    className="mt-3 bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded"
+                    onClick={() => {
+                      const existingItem =
+                        cartItems.find(
+                          (cartItem) =>
+                            cartItem.id === item.id
+                        );
+
+                      if (existingItem) {
+                        setCartItems(
+                          cartItems.map(
+                            (cartItem) =>
+                              cartItem.id === item.id
+                                ? {
+                                    ...cartItem,
+                                    quantity:
+                                      (cartItem.quantity || 1) + 1,
+                                  }
+                                : cartItem
+                          )
+                        );
+                      } else {
+                        setCartItems([
+                          ...cartItems,
+                          {
+                            ...item,
+                            quantity: 1,
+                          },
+                        ]);
+                      }
+                    }}
+                    className="mt-4 bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-xl w-full"
                   >
                     Add To Cart
                   </button>
