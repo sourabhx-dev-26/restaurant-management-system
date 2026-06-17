@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "node --max-old-space-size=1536 ./node_modules/next/dist/bin/next dev --webpack -H 127.0.0.1",
+    "dev:full": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
