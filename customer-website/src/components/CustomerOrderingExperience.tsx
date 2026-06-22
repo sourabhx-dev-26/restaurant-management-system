@@ -1,16 +1,18 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   addDoc,
   collection,
   getDocs,
   onSnapshot,
   query,
+  serverTimestamp,
   where,
 } from "firebase/firestore";
 import { db } from "../lib/firebase";
+import FoodOrderingWelcomeGate from "./FoodOrderingWelcomeGate";
 
 type MenuItem = {
   id: string;
@@ -23,7 +25,15 @@ type MenuItem = {
 };
 
 type CustomerOrderingExperienceProps = {
+  sessionToken?: string;
   tableNumber?: string;
+};
+
+type TableSession = {
+  id: string;
+  status?: string;
+  tableNumber?: string;
+  token?: string;
 };
 
 type PlacedOrder = {
@@ -34,6 +44,7 @@ type PlacedOrder = {
   };
   items?: MenuItem[];
   status?: string;
+  sessionId?: string;
   tableNumber?: string;
   totalPrice?: number;
 };
@@ -44,6 +55,8 @@ type Feedback = {
   message: string;
 };
 
+type PendingAction = "order" | "bill" | "waiter" | null;
+
 const waterBottleItem: MenuItem = {
   id: "quick-water-bottle",
   name: "Water Bottle",
@@ -53,18 +66,31 @@ const waterBottleItem: MenuItem = {
 };
 
 export default function CustomerOrderingExperience({
+  sessionToken = "",
   tableNumber: initialTableNumber,
 }: CustomerOrderingExperienceProps) {
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [cartItems, setCartItems] = useState<MenuItem[]>([]);
   const [placedOrders, setPlacedOrders] = useState<PlacedOrder[]>([]);
+  const [session, setSession] = useState<TableSession | null>(null);
+  const [sessionStatus, setSessionStatus] = useState<
+    "checking" | "invalid" | "valid"
+  >("checking");
   const [customerName, setCustomerName] = useState("");
   const [tableNumber] = useState(initialTableNumber || "");
   const [activeCategory, setActiveCategory] = useState("All");
   const [searchQuery, setSearchQuery] = useState("");
   const [orderNote, setOrderNote] = useState("");
   const [feedback, setFeedback] = useState<Feedback | null>(null);
+  const [cacheReady, setCacheReady] = useState(false);
+  const [restoredStorageKey, setRestoredStorageKey] = useState("");
+  const [pendingAction, setPendingAction] = useState<PendingAction>(null);
+  const pendingActionRef = useRef<PendingAction>(null);
+
+  const storageKey = useMemo(() => {
+    return `restaurantos:${tableNumber || "no-table"}:${sessionToken || "no-token"}`;
+  }, [sessionToken, tableNumber]);
 
   const availableItems = useMemo(
     () => menuItems.filter((item) => item.available !== false),
@@ -100,7 +126,10 @@ export default function CustomerOrderingExperience({
 
   const chefPicks = visibleItems.filter((item) => item.imageUrl).slice(0, 3);
 
-  const validCartItems = cartItems.filter((item) => Number(item.quantity || 0) > 0);
+  const validCartItems = useMemo(
+    () => cartItems.filter((item) => Number(item.quantity || 0) > 0),
+    [cartItems]
+  );
 
   const totalPrice = validCartItems.reduce(
     (sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 1),
@@ -112,7 +141,7 @@ export default function CustomerOrderingExperience({
     0
   );
 
-  const hasAssignedTable = tableNumber.trim().length > 0;
+  const hasValidSession = sessionStatus === "valid" && session !== null;
 
   useEffect(() => {
     const fetchMenuItems = async () => {
@@ -139,14 +168,118 @@ export default function CustomerOrderingExperience({
   }, []);
 
   useEffect(() => {
-    if (!hasAssignedTable) {
-      setPlacedOrders([]);
+    queueMicrotask(() => {
+      setCacheReady(false);
+
+      try {
+        const cachedValue = window.localStorage.getItem(storageKey);
+        if (!cachedValue) {
+          return;
+        }
+
+        const cachedOrder = JSON.parse(cachedValue) as {
+          cartItems?: MenuItem[];
+          customerName?: string;
+          orderNote?: string;
+        };
+
+        if (Array.isArray(cachedOrder.cartItems)) {
+          setCartItems(cachedOrder.cartItems);
+        }
+
+        if (typeof cachedOrder.customerName === "string") {
+          setCustomerName(cachedOrder.customerName);
+        }
+
+        if (typeof cachedOrder.orderNote === "string") {
+          setOrderNote(cachedOrder.orderNote);
+        }
+      } catch (error) {
+        console.error("Failed to restore cached order:", error);
+      } finally {
+        setRestoredStorageKey(storageKey);
+        setCacheReady(true);
+      }
+    });
+  }, [storageKey]);
+
+  useEffect(() => {
+    if (!cacheReady || restoredStorageKey !== storageKey) return;
+
+    try {
+      window.localStorage.setItem(
+        storageKey,
+        JSON.stringify({
+          cartItems: validCartItems,
+          customerName,
+          orderNote,
+        })
+      );
+    } catch (error) {
+      console.error("Failed to save cached order:", error);
+    }
+  }, [
+    cacheReady,
+    customerName,
+    orderNote,
+    restoredStorageKey,
+    storageKey,
+    validCartItems,
+  ]);
+
+  useEffect(() => {
+    const validateTableSession = async () => {
+      const cleanTableNumber = tableNumber.trim();
+      const cleanToken = sessionToken.trim();
+
+      if (!cleanTableNumber || !cleanToken) {
+        setSession(null);
+        setSessionStatus("invalid");
+        return;
+      }
+
+      try {
+        setSessionStatus("checking");
+
+        const sessionQuery = query(
+          collection(db, "tableSessions"),
+          where("tableNumber", "==", cleanTableNumber),
+          where("token", "==", cleanToken),
+          where("status", "==", "ACTIVE")
+        );
+
+        const snapshot = await getDocs(sessionQuery);
+        const doc = snapshot.docs[0];
+
+        if (!doc) {
+          setSession(null);
+          setSessionStatus("invalid");
+          return;
+        }
+
+        setSession({
+          id: doc.id,
+          ...doc.data(),
+        });
+        setSessionStatus("valid");
+      } catch (error) {
+        console.error("Error validating table session:", error);
+        setSession(null);
+        setSessionStatus("invalid");
+      }
+    };
+
+    validateTableSession();
+  }, [sessionToken, tableNumber]);
+
+  useEffect(() => {
+    if (!hasValidSession || !session) {
       return;
     }
 
     const ordersQuery = query(
       collection(db, "orders"),
-      where("tableNumber", "==", tableNumber)
+      where("sessionId", "==", session.id)
     );
 
     const unsubscribe = onSnapshot(ordersQuery, (snapshot) => {
@@ -161,9 +294,18 @@ export default function CustomerOrderingExperience({
     });
 
     return unsubscribe;
-  }, [hasAssignedTable, tableNumber]);
+  }, [hasValidSession, session]);
 
   const addToCart = (item: MenuItem) => {
+    if (!hasValidSession) {
+      setFeedback({
+        tone: "error",
+        title: "Invalid QR session",
+        message: "Please scan the active QR code at your table before adding items.",
+      });
+      return;
+    }
+
     setCartItems((currentItems) => {
       const existingItem = currentItems.find((cartItem) => cartItem.id === item.id);
 
@@ -209,11 +351,15 @@ export default function CustomerOrderingExperience({
   };
 
   const placeOrder = async () => {
-    if (!hasAssignedTable) {
+    if (pendingActionRef.current) {
+      return;
+    }
+
+    if (!hasValidSession || !session) {
       setFeedback({
         tone: "error",
-        title: "Table not assigned",
-        message: "Please scan the table QR code before sending an order.",
+        title: "Invalid QR session",
+        message: "Please scan the active QR code at your table before sending an order.",
       });
       return;
     }
@@ -227,15 +373,20 @@ export default function CustomerOrderingExperience({
       return;
     }
 
+    pendingActionRef.current = "order";
+    setPendingAction("order");
+
     try {
       await addDoc(collection(db, "orders"), {
         customerName,
+        sessionId: session.id,
+        sessionToken,
         tableNumber,
         items: validCartItems,
         note: orderNote.trim(),
         totalPrice,
         status: "PLACED",
-        createdAt: new Date(),
+        createdAt: serverTimestamp(),
       });
 
       setFeedback({
@@ -247,6 +398,7 @@ export default function CustomerOrderingExperience({
       setCartItems([]);
       setOrderNote("");
       setCustomerName("");
+      window.localStorage.removeItem(storageKey);
     } catch (error) {
       console.error(error);
       setFeedback({
@@ -254,26 +406,38 @@ export default function CustomerOrderingExperience({
         title: "Order failed",
         message: "The order could not be sent. Please ask the staff for help.",
       });
+    } finally {
+      pendingActionRef.current = null;
+      setPendingAction(null);
     }
   };
 
   const requestBill = async () => {
-    if (!hasAssignedTable) {
+    if (pendingActionRef.current) {
+      return;
+    }
+
+    if (!hasValidSession || !session) {
       setFeedback({
         tone: "error",
-        title: "Table not assigned",
-        message: "Please scan the table QR code before requesting the bill.",
+        title: "Invalid QR session",
+        message: "Please scan the active QR code at your table before requesting the bill.",
       });
       return;
     }
 
+    pendingActionRef.current = "bill";
+    setPendingAction("bill");
+
     try {
       await addDoc(collection(db, "billRequests"), {
         customerName,
+        sessionId: session.id,
+        sessionToken,
         tableNumber,
         totalPrice,
         status: "REQUESTED",
-        createdAt: new Date(),
+        createdAt: serverTimestamp(),
       });
 
       setFeedback({
@@ -288,26 +452,38 @@ export default function CustomerOrderingExperience({
         title: "Bill request failed",
         message: "The bill request could not be sent. Please call the staff.",
       });
+    } finally {
+      pendingActionRef.current = null;
+      setPendingAction(null);
     }
   };
 
   const callWaiter = async () => {
-    if (!hasAssignedTable) {
+    if (pendingActionRef.current) {
+      return;
+    }
+
+    if (!hasValidSession || !session) {
       setFeedback({
         tone: "error",
-        title: "Table not assigned",
-        message: "Please scan the table QR code before calling a waiter.",
+        title: "Invalid QR session",
+        message: "Please scan the active QR code at your table before calling a waiter.",
       });
       return;
     }
 
+    pendingActionRef.current = "waiter";
+    setPendingAction("waiter");
+
     try {
       await addDoc(collection(db, "serviceRequests"), {
         customerName,
+        sessionId: session.id,
+        sessionToken,
         tableNumber,
         requestType: "WAITER",
         status: "REQUESTED",
-        createdAt: new Date(),
+        createdAt: serverTimestamp(),
       });
 
       setFeedback({
@@ -322,11 +498,15 @@ export default function CustomerOrderingExperience({
         title: "Request failed",
         message: "The waiter request could not be sent. Please try again.",
       });
+    } finally {
+      pendingActionRef.current = null;
+      setPendingAction(null);
     }
   };
 
   return (
-    <main className="min-h-screen overflow-hidden bg-[#05070B] text-white">
+    <main className="luxury-page overflow-hidden">
+      <FoodOrderingWelcomeGate featuredImageUrl={featuredItem?.imageUrl} />
       <div className="pointer-events-none fixed inset-0">
         <div className="absolute inset-0 bg-[linear-gradient(135deg,#05070B_0%,#0A0F18_44%,#091411_100%)]" />
         <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.035)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.025)_1px,transparent_1px)] bg-[size:58px_58px]" />
@@ -344,9 +524,9 @@ export default function CustomerOrderingExperience({
               OS
             </div>
             <div>
-              <p className="text-lg font-black">RestaurantOS</p>
+              <p className="luxury-brand text-lg">DEMO</p>
               <p className="text-xs font-semibold text-slate-500">
-                Live Menu Command Interface
+                Table ordering
               </p>
             </div>
           </div>
@@ -355,8 +535,14 @@ export default function CustomerOrderingExperience({
             <StatusPill label="Kitchen Status" value="Online" tone="green" />
             <StatusPill
               label="QR Table"
-              value={tableNumber || "Not assigned"}
-              tone={hasAssignedTable ? "slate" : "red"}
+              value={
+                sessionStatus === "checking"
+                  ? "Checking..."
+                  : hasValidSession
+                    ? tableNumber
+                    : "Invalid QR"
+              }
+              tone={hasValidSession ? "slate" : "red"}
             />
             <StatusPill label="Order Mode" value="Self Order" tone="gold" />
           </div>
@@ -388,14 +574,13 @@ export default function CustomerOrderingExperience({
 
               <div>
                 <p className="text-xs font-black uppercase text-[#D6B25E]">
-                  Smart Hospitality Console
+                  Table ordering
                 </p>
                 <h1 className="mt-3 text-4xl font-black leading-[0.95] sm:text-6xl lg:text-7xl">
-                  Order from a living digital menu.
+                  Order from the DEMO digital menu.
                 </h1>
                 <p className="mt-5 max-w-xl text-sm leading-6 text-slate-300 sm:text-base">
-                  Discover chef highlights, filter the live catalog, track your
-                  smart cart, and send your order straight to the kitchen.
+                  Browse the menu, add items, and send your order to the kitchen.
                 </p>
 
                 <div className="mt-7 grid gap-3 sm:grid-cols-3">
@@ -427,9 +612,9 @@ export default function CustomerOrderingExperience({
                 from the live catalog.
               </p>
               <button
-                disabled={!featuredItem}
+                disabled={!featuredItem || !hasValidSession}
                 onClick={() => featuredItem && addToCart(featuredItem)}
-                className="mt-5 w-full rounded-2xl bg-[#D6B25E] px-4 py-3 text-sm font-black text-black transition hover:bg-[#F5D98B] disabled:opacity-50"
+                className="mt-5 w-full rounded-2xl bg-[#D6B25E] px-4 py-3 text-sm font-black text-black transition hover:bg-[#F5D98B] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Add to Order
               </button>
@@ -486,7 +671,12 @@ export default function CustomerOrderingExperience({
             {chefPicks.length > 0 && (
               <div className="grid gap-3 md:grid-cols-3">
                 {chefPicks.map((item) => (
-                  <MiniPick key={item.id} item={item} onAdd={() => addToCart(item)} />
+                  <MiniPick
+                    key={item.id}
+                    disabled={!hasValidSession}
+                    item={item}
+                    onAdd={() => addToCart(item)}
+                  />
                 ))}
               </div>
             )}
@@ -539,8 +729,9 @@ export default function CustomerOrderingExperience({
                       </div>
 
                       <button
+                        disabled={!hasValidSession}
                         onClick={() => addToCart(item)}
-                        className="mt-4 w-full rounded-2xl bg-[#D6B25E] px-4 py-3 text-sm font-black text-black transition hover:bg-[#F5D98B]"
+                        className="mt-4 w-full rounded-2xl bg-[#D6B25E] px-4 py-3 text-sm font-black text-black transition hover:bg-[#F5D98B] disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         Add to Order
                       </button>
@@ -561,9 +752,11 @@ export default function CustomerOrderingExperience({
             onPlaceOrder={placeOrder}
             onQuantityChange={updateQuantity}
             onRequestBill={requestBill}
+            pendingAction={pendingAction}
             orderNote={orderNote}
             placedOrders={placedOrders}
-            hasAssignedTable={hasAssignedTable}
+            hasValidSession={hasValidSession}
+            sessionStatus={sessionStatus}
             tableNumber={tableNumber}
             totalPrice={totalPrice}
             totalQuantity={totalQuantity}
@@ -577,7 +770,7 @@ export default function CustomerOrderingExperience({
 function SmartCart({
   cartItems,
   customerName,
-  hasAssignedTable,
+  hasValidSession,
   onAddWater,
   onCallWaiter,
   onNameChange,
@@ -585,15 +778,17 @@ function SmartCart({
   onPlaceOrder,
   onQuantityChange,
   onRequestBill,
+  pendingAction,
   orderNote,
   placedOrders,
+  sessionStatus,
   tableNumber,
   totalPrice,
   totalQuantity,
 }: {
   cartItems: MenuItem[];
   customerName: string;
-  hasAssignedTable: boolean;
+  hasValidSession: boolean;
   onAddWater: () => void;
   onCallWaiter: () => void;
   onNameChange: (value: string) => void;
@@ -601,8 +796,10 @@ function SmartCart({
   onPlaceOrder: () => void;
   onQuantityChange: (itemId: string, direction: "increase" | "decrease") => void;
   onRequestBill: () => void;
+  pendingAction: PendingAction;
   orderNote: string;
   placedOrders: PlacedOrder[];
+  sessionStatus: "checking" | "invalid" | "valid";
   tableNumber: string;
   totalPrice: number;
   totalQuantity: number;
@@ -612,7 +809,7 @@ function SmartCart({
       <div className="flex items-center justify-between gap-4">
         <div>
           <p className="text-xs font-black uppercase text-[#D6B25E]">
-            Smart Cart
+            Table Cart
           </p>
           <h2 className="mt-1 text-3xl font-black">Table Order</h2>
         </div>
@@ -647,30 +844,35 @@ function SmartCart({
         className="mt-3 min-h-24 w-full resize-none rounded-2xl border border-white/10 bg-[#05070B] px-4 py-3 text-sm font-semibold text-white outline-none placeholder:text-slate-500 focus:border-[#D6B25E]/70"
       />
 
-      {!hasAssignedTable && (
+      {!hasValidSession && (
         <div className="mt-4 rounded-2xl border border-[#FF4D4D]/30 bg-[#FF4D4D]/10 p-3 text-sm font-bold text-[#FF9A9A]">
-          Scan a table QR code to send orders or request the bill.
+          {sessionStatus === "checking"
+            ? "Checking your table QR session..."
+            : "Invalid or expired QR. Please scan the active QR code at your table."}
         </div>
       )}
 
       <div className="mt-4 grid gap-3 sm:grid-cols-3">
         <button
           onClick={onAddWater}
-          className="rounded-2xl border border-white/10 bg-white/[0.055] px-3 py-3 text-sm font-black text-white transition hover:border-[#D6B25E]/45"
+          disabled={!hasValidSession || pendingAction !== null}
+          className="rounded-2xl border border-white/10 bg-white/[0.055] px-3 py-3 text-sm font-black text-white transition hover:border-[#D6B25E]/45 disabled:cursor-not-allowed disabled:opacity-45"
         >
           Water Bottle
         </button>
         <button
           onClick={onCallWaiter}
-          className="rounded-2xl border border-white/10 bg-white/[0.055] px-3 py-3 text-sm font-black text-white transition hover:border-[#D6B25E]/45"
+          disabled={!hasValidSession || pendingAction !== null}
+          className="rounded-2xl border border-white/10 bg-white/[0.055] px-3 py-3 text-sm font-black text-white transition hover:border-[#D6B25E]/45 disabled:cursor-not-allowed disabled:opacity-45"
         >
-          Call Waiter
+          {pendingAction === "waiter" ? "Calling..." : "Call Waiter"}
         </button>
         <button
           onClick={onRequestBill}
-          className="rounded-2xl border border-[#D6B25E]/25 bg-[#D6B25E]/10 px-3 py-3 text-sm font-black text-[#F5D98B] transition hover:border-[#D6B25E]/60"
+          disabled={!hasValidSession || pendingAction !== null}
+          className="rounded-2xl border border-[#D6B25E]/25 bg-[#D6B25E]/10 px-3 py-3 text-sm font-black text-[#F5D98B] transition hover:border-[#D6B25E]/60 disabled:cursor-not-allowed disabled:opacity-45"
         >
-          Request Bill
+          {pendingAction === "bill" ? "Requesting..." : "Request Bill"}
         </button>
       </div>
 
@@ -683,7 +885,7 @@ function SmartCart({
           {cartItems.map((item) => (
             <li key={item.id} className="rounded-3xl bg-white/[0.055] p-3">
               <div className="flex gap-3">
-                <div className="relative h-17 w-17 shrink-0 overflow-hidden rounded-2xl bg-[#0D111A]">
+                <div className="relative h-[68px] w-[68px] shrink-0 overflow-hidden rounded-2xl bg-[#0D111A]">
                   {item.imageUrl ? (
                     <Image
                       src={item.imageUrl}
@@ -734,7 +936,7 @@ function SmartCart({
         </ul>
       )}
 
-      <OrderHistory hasAssignedTable={hasAssignedTable} orders={placedOrders} />
+      <OrderHistory hasValidSession={hasValidSession} orders={placedOrders} />
 
       <div className="mt-5 rounded-3xl border border-[#D6B25E]/20 bg-[#D6B25E]/10 p-4">
         <div className="flex items-center justify-between">
@@ -743,21 +945,35 @@ function SmartCart({
         </div>
         <button
           onClick={onPlaceOrder}
-          disabled={!hasAssignedTable || cartItems.length === 0 || totalQuantity === 0}
+          disabled={
+            !hasValidSession ||
+            cartItems.length === 0 ||
+            totalQuantity === 0 ||
+            pendingAction !== null
+          }
           className="mt-4 w-full rounded-2xl bg-[#35D07F] px-4 py-3 font-black text-black transition hover:bg-[#6EF2A9] disabled:cursor-not-allowed disabled:opacity-45"
         >
-          Send to Kitchen
+          {pendingAction === "order" ? "Sending..." : "Send to Kitchen"}
         </button>
       </div>
     </aside>
   );
 }
 
-function MiniPick({ item, onAdd }: { item: MenuItem; onAdd: () => void }) {
+function MiniPick({
+  disabled,
+  item,
+  onAdd,
+}: {
+  disabled: boolean;
+  item: MenuItem;
+  onAdd: () => void;
+}) {
   return (
     <button
+      disabled={disabled}
       onClick={onAdd}
-      className="group flex items-center gap-3 rounded-[28px] border border-white/10 bg-white/[0.06] p-3 text-left shadow-xl shadow-black/20 backdrop-blur-xl transition hover:border-[#D6B25E]/45"
+      className="group flex items-center gap-3 rounded-[28px] border border-white/10 bg-white/[0.06] p-3 text-left shadow-xl shadow-black/20 backdrop-blur-xl transition hover:border-[#D6B25E]/45 disabled:cursor-not-allowed disabled:opacity-50"
     >
       <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-2xl bg-[#0D111A]">
         {item.imageUrl ? (
@@ -780,13 +996,13 @@ function MiniPick({ item, onAdd }: { item: MenuItem; onAdd: () => void }) {
 }
 
 function OrderHistory({
-  hasAssignedTable,
+  hasValidSession,
   orders,
 }: {
-  hasAssignedTable: boolean;
+  hasValidSession: boolean;
   orders: PlacedOrder[];
 }) {
-  if (!hasAssignedTable) {
+  if (!hasValidSession) {
     return null;
   }
 
